@@ -1,44 +1,86 @@
-use std::{fs::File, io, io::Read};
-use std::io::Write;
-use goblin::mach::fat::FatArch;
-use goblin::mach::MachO;
+use std::{env, fs::File, io::Read};
+use std::error::Error;
+use goblin::{mach::Mach, Object};
 
-fn parse_data(arch: FatArch, data: &[u8]) {
-    let object = MachO::parse(arch.slice(data), 0).expect("Failed to parse Mach-O object");
-    for data in object.exports().unwrap(){
-        println!("{:#?}", data);
-    }
-}
+fn main() -> Result<(), Box<dyn Error>> {
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let path_to_dylib = "/Users/psyko/Library/Application Support/Steam/steamapps/common/Devour/Devour.app/Contents/Frameworks/GameAssembly.dylib";
-    let mut dylib_buffer = Vec::new();
-    File::open(&path_to_dylib)?.read_to_end(&mut dylib_buffer)?;
-    let multiarch = goblin::mach::MultiArch::new(&dylib_buffer)?;
+    let input = env::args().nth(1).ok_or("usage: ./test_tmp [executable file]")?;
+    let mut file = File::open(input)?;
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer)?;
+    let result = Object::parse(&buffer)?;
 
-    /*
-    let mut usr_input = String::new();
-    print!("Arch ?:" );
-    io::stdout().flush()?;
-    io::stdin().read_line(&mut usr_input)?;
-    */
-    
-    Ok(
-        for arch in multiarch.iter_arches() {
-            let arch = arch?;
-            match arch.cputype {
-                goblin::mach::cputype::CPU_TYPE_X86_64 => {
-                    println!("Cpu Type {}: {:#?}", arch.cputype, arch);
-                    parse_data(arch, dylib_buffer.as_slice());
+    match result {
+        Object::Mach(mac_os) => {
+            match mac_os {
+                Mach::Fat(e) => {
+                    for x in e.iter_arches() {
+                        let x = x?;
+                        let arch_data = &buffer[x.offset as usize..(x.offset + x.size) as usize];
+                        let result = Object::parse(arch_data)?;
+                        match result {
+                            Object::Mach(e) => {
+                                match e {
+                                    Mach::Binary(e) => {
+                                        println!("Dependency found:");
+                                        println!("Multi Arch {}:", get_cpu_type_mac_os(&x.cputype));
+                                        for x in e.libs {
+                                            println!("{}", x);
+                                        }
+                                        println!()
+                                    },
+                                    _ => {}
+                                }
+                            }
+                            _ => {}
+                        }
+
+                    }
                 }
-                goblin::mach::cputype::CPU_TYPE_ARM64 => {
-                    println!("Cpu Type {}: {:#?}", arch.cputype, arch);
-                    parse_data(arch, dylib_buffer.as_slice());
-                }
-                _ => {
-                    eprintln!("No Arch supported in DyLib")
+                Mach::Binary(e) => {
+                    println!("Dependency found: ({})", get_cpu_type_mac_os(&e.header.cputype));
+                    for x in e.libs {
+                        println!("{}", x);
+                    }
                 }
             }
+
         }
-    )
+        Object::Elf(elf) => {
+            println!("Dependency found: ");
+            for x in elf.libraries {
+                println!("{x}");
+            }
+        }
+        Object::PE(pe)=> {
+            println!("Dependency found: ");
+            for x in pe.libraries {
+                println!("{x}");
+            }
+        }
+        Object::Archive(ar) => {
+            println!("Archive not supported {:#?}", ar);
+            for x in ar.members() {
+                println!("Member: {}", x);
+            }
+        }
+        Object::COFF(coff) =>{
+            println!("COFF (Common Object File Format) not supported {:#?}", coff);
+        }
+        Object::Unknown(u) => {
+            println!("Unknown not supported magic number is {}", u);
+        }
+        _ => {
+            println!("Error unknown architecture.");
+        }
+    }
+    Ok(())
+}
+
+fn get_cpu_type_mac_os(cpu: &u32) -> String {
+    match cpu {
+        16777223 => String::from("x86_64"),
+        16777228 => String::from("arm64"),
+        _ => String::from("Unknown"),
+    }
 }
